@@ -1,4 +1,4 @@
-# Despliegue por release — Laravel en servidor propio (runner self-hosted).
+# Despliegue por release — Laravel en servidor propio sin Docker (runner self-hosted). Caso ogov.
 #
 # Mismo esquema que ogov / ogov-presupuestos (releases/ + symlink current),
 # pero cada carpeta se llama como la versión (releases/v1.4.0) en vez de con
@@ -8,13 +8,14 @@
 #   - Release publicada     (v1.4.0)       -> production
 #   - Run workflow manual (version + env)  -> redespliegue / ROLLBACK
 #
-# Sustituir MIPROYECTO por el grupo/label de runners del proyecto.
+# MIPROYECTO es el grupo/label de runners del proyecto (lo rellena scripts/inicializar-proyecto.sh).
 # Variables por GitHub Environment (staging / production):
 #   DEPLOY_PATH        carpeta raíz del despliegue en el servidor (obligatoria)
 #   RELEASES_TO_KEEP   versiones que se conservan en disco (por defecto 5)
 #   MIGRATE_COMMAND    p. ej. "php artisan migrate --force" (vacío = no migra)
 # Secretos: LARAVEL_ENV_ENCRYPTION_KEY
 name: Deploy
+run-name: "Deploy ${{ github.event_name == 'release' && github.event.release.tag_name || inputs.version }} → ${{ github.event_name == 'release' && (github.event.release.prerelease && 'staging' || 'production') || inputs.environment }}"
 
 on:
   release:
@@ -90,7 +91,7 @@ jobs:
 
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "environment=$ENVIRONMENT" >> "$GITHUB_OUTPUT"
-          echo "### 🚀 $VERSION → $ENVIRONMENT" >> "$GITHUB_STEP_SUMMARY"
+          echo "### Despliegue de $VERSION en $ENVIRONMENT" >> "$GITHUB_STEP_SUMMARY"
 
   deploy:
     name: Desplegar ${{ needs.resolve.outputs.version }} en ${{ needs.resolve.outputs.environment }}
@@ -119,7 +120,7 @@ jobs:
         run: |
           if [ -f "$RELEASE_PATH/.deploy-complete" ]; then
             echo "reuse=true" >> "$GITHUB_OUTPUT"
-            echo "♻️ $VERSION ya estaba construida en el servidor: se reactiva sin recompilar." >> "$GITHUB_STEP_SUMMARY"
+            echo "$VERSION ya estaba construida en el servidor: se reactiva sin recompilar." >> "$GITHUB_STEP_SUMMARY"
           else
             rm -rf "$RELEASE_PATH"   # restos de un intento fallido
             echo "reuse=false" >> "$GITHUB_OUTPUT"
@@ -177,9 +178,11 @@ jobs:
         working-directory: ${{ env.RELEASE_PATH }}
         run: |
           php artisan package:discover --ansi
-          if [ -f package.json ]; then
-            pnpm install --frozen-lockfile
-            pnpm run build
+          # Vite (Blade o Inertia). Las VITE_* se leen del .env en el build.
+          if [ -f pnpm-lock.yaml ]; then
+            pnpm install --frozen-lockfile && VITE_APP_VERSION="$VERSION" pnpm run build
+          elif [ -f package-lock.json ]; then
+            npm ci && VITE_APP_VERSION="$VERSION" npm run build
           fi
           php artisan storage:link
 
@@ -212,7 +215,7 @@ jobs:
           ln -sfn "$RELEASE_PATH" "$DEPLOY_PATH/current"
           echo "$VERSION" > "$DEPLOY_PATH/CURRENT_VERSION"
           echo "$(date -u +%FT%TZ) $PREVIOUS -> $VERSION (${{ github.actor }}, ${{ github.event_name }})" >> "$DEPLOY_PATH/deploy-history.log"
-          echo "✅ $PREVIOUS → **$VERSION**" >> "$GITHUB_STEP_SUMMARY"
+          echo "Desplegado: $PREVIOUS → **$VERSION**" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Reiniciar workers
         working-directory: ${{ env.RELEASE_PATH }}

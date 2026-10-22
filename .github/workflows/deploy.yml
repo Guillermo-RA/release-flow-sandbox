@@ -1,6 +1,30 @@
-# SANDBOX: misma mecánica que templates/deploy-laravel.yml (resolve, guarda de rc,
-# releases/<versión> + symlink current, reutilización, migraciones antes de activar,
-# limpieza), con un "build" trivial y runner self-hosted por label en vez de por grupo.
+# Despliegue por release — Laravel + Inertia en Docker (plantilla por defecto de 10code).
+#
+# Sigue las convenciones de 10code-inertia-template / snp-community:
+#   - docker/<entorno>/php/Dockerfile: multi-stage, incluye el `npm run build` de Vite.
+#   - docker/<entorno>/nginx/Dockerfile: copia public/ de la imagen PHP de la misma
+#     versión (ARG SHA + REPOSITORY + APP_ENV), así que va SIEMPRE después de la PHP.
+#   - php, horizon, cron, reverb y ssr usan la misma imagen PHP: un rollback cambia
+#     backend, frontend y workers a la vez.
+# Diferencia: las imágenes se etiquetan con la versión (…-production-php:v1.4.0)
+# en vez de con el SHA. Un rollback reutiliza la imagen ya publicada; si ya no
+# existe (limpieza del registry), se reconstruye desde el tag.
+#
+#   - Pre-release publicada (v1.4.0-rc.1)  -> staging
+#   - Release publicada     (v1.4.0)       -> production
+#   - Run workflow manual (version + env)  -> redespliegue / ROLLBACK
+#
+# MIPROYECTO es el grupo/label de runners del proyecto (lo rellena scripts/inicializar-proyecto.sh).
+# Variables por GitHub Environment (staging / production):
+#   DOCKER_BUILD_ARGS  build-args extra de la imagen PHP, uno por línea; aquí van
+#                      los VITE_* públicos (VITE_REVERB_HOST=…, VITE_REVERB_PORT=…)
+#   Despliegue con docker compose (como snp-community):
+#     ENV_FILE_PATH    ruta en el servidor del .env que lee el compose (obligatoria)
+#     MIGRATE_COMMAND  p. ej. "php artisan migrate --force" (vacío = no migra)
+#   Despliegue con Ansible (como 10code-inertia-template):
+#     ANSIBLE_PATH, USER  igual que en reusable-cd.yml; el playbook recibe
+#                         -e app_version=<versión> y se ocupa de las migraciones
+# Secretos: GHCR_TOKEN, VITE_REVERB_APP_KEY (si se usa Reverb)
 name: Deploy
 run-name: "Deploy ${{ github.event_name == 'release' && github.event.release.tag_name || inputs.version }} → ${{ github.event_name == 'release' && (github.event.release.prerelease && 'staging' || 'production') || inputs.environment }}"
 
@@ -78,78 +102,139 @@ jobs:
 
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "environment=$ENVIRONMENT" >> "$GITHUB_OUTPUT"
-          echo "### 🚀 $VERSION → $ENVIRONMENT" >> "$GITHUB_STEP_SUMMARY"
+          echo "### Despliegue de $VERSION en $ENVIRONMENT" >> "$GITHUB_STEP_SUMMARY"
 
   deploy:
     name: Desplegar ${{ needs.resolve.outputs.version }} en ${{ needs.resolve.outputs.environment }}
     needs: resolve
-    runs-on: [self-hosted, sandbox]
+    runs-on:
+      group: ${{ needs.resolve.outputs.environment == 'production' && 'MIPROYECTO-production' || 'MIPROYECTO-staging' }}
+      labels: [MIPROYECTO]
     environment: ${{ needs.resolve.outputs.environment }}
     env:
       VERSION: ${{ needs.resolve.outputs.version }}
       APP_ENV_NAME: ${{ needs.resolve.outputs.environment }}
-      DEPLOY_PATH: ${{ vars.DEPLOY_PATH }}
-      RELEASES_TO_KEEP: ${{ vars.RELEASES_TO_KEEP || 5 }}
+      COMPOSE_FILE: docker-compose-${{ needs.resolve.outputs.environment }}.yml
     steps:
-      - name: Preparar rutas
-        run: |
-          set -euo pipefail
-          test -n "$DEPLOY_PATH" || { echo "::error::Falta la variable DEPLOY_PATH en el environment $APP_ENV_NAME"; exit 1; }
-          mkdir -p "$DEPLOY_PATH/releases" "$DEPLOY_PATH/shared"
-          echo "RELEASE_PATH=$DEPLOY_PATH/releases/$VERSION" >> "$GITHUB_ENV"
-
-      - name: ¿Está ya construida esta versión en el servidor?
-        id: existing
-        run: |
-          if [ -f "$RELEASE_PATH/.deploy-complete" ]; then
-            echo "reuse=true" >> "$GITHUB_OUTPUT"
-            echo "♻️ $VERSION ya estaba construida en el servidor: se reactiva sin recompilar." >> "$GITHUB_STEP_SUMMARY"
-          else
-            rm -rf "$RELEASE_PATH"   # restos de un intento fallido
-            echo "reuse=false" >> "$GITHUB_OUTPUT"
-          fi
-
+      # El compose y los Dockerfiles salen del propio tag: un rollback usa la
+      # infraestructura de esa versión, no la actual.
       - name: Checkout del tag
-        if: steps.existing.outputs.reuse != 'true'
         uses: actions/checkout@v4
         with:
           ref: refs/tags/${{ env.VERSION }}
 
-      - name: Copiar código
-        if: steps.existing.outputs.reuse != 'true'
-        run: |
-          mkdir -p "$RELEASE_PATH"
-          cp -r . "$RELEASE_PATH"
-          rm -rf "$RELEASE_PATH/.git"
-          echo "$VERSION" > "$RELEASE_PATH/VERSION"
+      - name: Login en GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GHCR_TOKEN }}
 
-      - name: Build (sandbox)
-        if: steps.existing.outputs.reuse != 'true'
-        working-directory: ${{ env.RELEASE_PATH }}
+      - name: ¿Existen ya las imágenes de esta versión?
+        id: existing
         run: |
-          ./build.sh
-          echo "$(date -u +%FT%TZ) build $VERSION" >> "$DEPLOY_PATH/builds.log"
-          touch .deploy-complete
+          IMAGE_REPOSITORY=$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')
+          IMAGE_PREFIX="ghcr.io/$IMAGE_REPOSITORY"
+          echo "IMAGE_REPOSITORY=$IMAGE_REPOSITORY" >> "$GITHUB_ENV"
+          echo "IMAGE_PREFIX=$IMAGE_PREFIX" >> "$GITHUB_ENV"
+          if docker manifest inspect "$IMAGE_PREFIX-$APP_ENV_NAME-php:$VERSION" >/dev/null 2>&1 \
+            && docker manifest inspect "$IMAGE_PREFIX-$APP_ENV_NAME-nginx:$VERSION" >/dev/null 2>&1; then
+            echo "reuse=true" >> "$GITHUB_OUTPUT"
+            echo "Las imágenes de $VERSION ya existen en GHCR: se reutilizan sin recompilar." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "reuse=false" >> "$GITHUB_OUTPUT"
+          fi
 
+      # ---------- Construcción (solo si las imágenes no existen) ----------
+
+      - name: Build & push imagen PHP
+        if: steps.existing.outputs.reuse != 'true'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./docker/${{ env.APP_ENV_NAME }}/php/Dockerfile
+          push: true
+          # VITE_* se incrustan en el bundle durante el build: por eso hay una imagen
+          # por entorno. VITE_APP_VERSION permite mostrar la versión en el frontend.
+          build-args: |
+            APP_ENV=${{ env.APP_ENV_NAME }}
+            APP_VERSION=${{ env.VERSION }}
+            VITE_APP_VERSION=${{ env.VERSION }}
+            ${{ vars.DOCKER_BUILD_ARGS }}
+          secrets: |
+            vite_reverb_app_key=${{ secrets.VITE_REVERB_APP_KEY }}
+          tags: ${{ env.IMAGE_PREFIX }}-${{ env.APP_ENV_NAME }}-php:${{ env.VERSION }}
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.version=${{ env.VERSION }}
+
+      # El Dockerfile de nginx parte de ${REGISTRY}/${REPOSITORY}-${APP_ENV}-php:${SHA}:
+      # SHA recibe la versión para copiar los assets de Vite de esta misma release.
+      - name: Build & push imagen Nginx
+        if: steps.existing.outputs.reuse != 'true'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./docker/${{ env.APP_ENV_NAME }}/nginx/Dockerfile
+          push: true
+          build-args: |
+            APP_ENV=${{ env.APP_ENV_NAME }}
+            APP_VERSION=${{ env.VERSION }}
+            SHA=${{ env.VERSION }}
+            REPOSITORY=${{ env.IMAGE_REPOSITORY }}
+          tags: ${{ env.IMAGE_PREFIX }}-${{ env.APP_ENV_NAME }}-nginx:${{ env.VERSION }}
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.version=${{ env.VERSION }}
+
+      # ---------- Activación (siempre: despliegue nuevo y rollback) ----------
+
+      - name: Versión anterior
+        run: |
+          HISTORY="$HOME/.deploy-history/${{ github.event.repository.name }}-$APP_ENV_NAME.log"
+          mkdir -p "$(dirname "$HISTORY")"
+          echo "HISTORY=$HISTORY" >> "$GITHUB_ENV"
+          echo "PREVIOUS=$(tail -n 1 "$HISTORY" 2>/dev/null | awk '{print $NF}')" >> "$GITHUB_ENV"
+
+      # --- Opción A: docker compose (snp-community) ---
+      # El compose debe usar la etiqueta en todas las imágenes de la app:
+      #   image: ${IMAGE_PREFIX}-<entorno>-php:${APP_VERSION}   (o :${SHA}, ambas valen)
+      # en php, horizon, cron, reverb y ssr, para que todos cambien juntos.
+      - name: Preparar .env y descargar imágenes
+        if: vars.ANSIBLE_PATH == ''
+        env:
+          ENV_FILE_PATH: ${{ vars.ENV_FILE_PATH }}
+        run: |
+          test -n "$ENV_FILE_PATH" || { echo "::error::Falta la variable ENV_FILE_PATH en el environment $APP_ENV_NAME"; exit 1; }
+          cp "$ENV_FILE_PATH" .env
+          echo "APP_VERSION=$VERSION" >> .env
+          echo "SHA=$VERSION" >> .env
+          echo "IMAGE_PREFIX=$IMAGE_PREFIX" >> .env
+          docker compose -f "$COMPOSE_FILE" pull
+
+      # Antes de recrear los contenedores: el esquema nuevo tiene que funcionar con
+      # el código que todavía está sirviendo (expand/contract).
       - name: Migraciones
-        if: vars.MIGRATE_COMMAND != ''
-        working-directory: ${{ env.RELEASE_PATH }}
-        run: ${{ vars.MIGRATE_COMMAND }}
+        if: vars.ANSIBLE_PATH == '' && vars.MIGRATE_COMMAND != ''
+        run: docker compose -f "$COMPOSE_FILE" run --rm --no-deps php ${{ vars.MIGRATE_COMMAND }}
 
-      - name: Activar versión
+      - name: Levantar contenedores
+        if: vars.ANSIBLE_PATH == ''
         run: |
-          PREVIOUS=$(cat "$DEPLOY_PATH/CURRENT_VERSION" 2>/dev/null || echo "ninguna")
-          ln -sfn "$RELEASE_PATH" "$DEPLOY_PATH/current"
-          echo "$VERSION" > "$DEPLOY_PATH/CURRENT_VERSION"
-          echo "$(date -u +%FT%TZ) $PREVIOUS -> $VERSION (${{ github.actor }}, ${{ github.event_name }})" >> "$DEPLOY_PATH/deploy-history.log"
-          echo "✅ $PREVIOUS → **$VERSION**" >> "$GITHUB_STEP_SUMMARY"
+          docker compose -f "$COMPOSE_FILE" up -d --force-recreate --remove-orphans
+          docker image prune -f
 
-      - name: Limpiar versiones antiguas
+      # --- Opción B: Ansible (10code-inertia-template) ---
+      - name: Desplegar con Ansible
+        if: vars.ANSIBLE_PATH != ''
         run: |
-          cd "$DEPLOY_PATH/releases"
-          ACTIVE=$(basename "$(readlink -f "$DEPLOY_PATH/current")")
-          ls -1t | grep -vxF "$ACTIVE" | tail -n +"$RELEASES_TO_KEEP" | xargs -r rm -rf
-          echo "Versiones disponibles para rollback rápido: $(ls -1t | tr '\n' ' ')" >> "$GITHUB_STEP_SUMMARY"
+          cd "/home/debian/${{ vars.USER }}/actions-runner/_work/${{ vars.ANSIBLE_PATH }}/${{ vars.ANSIBLE_PATH }}"
+          ansible-playbook site.yml -i "inventory/$APP_ENV_NAME.yml" --vault-password-file .vault_pass -e "app_version=$VERSION"
+
+      - name: Registrar despliegue
+        run: |
+          echo "$(date -u +%FT%TZ) ${{ github.actor }} ${{ github.event_name }} $VERSION" >> "$HISTORY"
+          echo "Desplegado: ${PREVIOUS:-ninguna} → **$VERSION**" >> "$GITHUB_STEP_SUMMARY"
 
   jira:
     name: Marcar hito como publicado en Jira

@@ -22,14 +22,14 @@ Resume: última versión final, rcs pendientes y lo que hay en `main` sin public
 ## rc vX.Y.Z
 
 1. Comprueba en Jira (si hay MCP) que las tareas con `fixVersion = vX.Y.Z` están terminadas. Si no, avisa.
-2. **Primer rc del hito:** abre un PR `CHORE: prepara release vX.Y.Z` que en `CHANGELOG.md` convierta `## [Unreleased]` en `## [vX.Y.Z] - AAAA-MM-DD` y deje un `## [Unreleased]` vacío encima. Espera a que se mergee.
+2. **Primer rc del hito:** abre un PR `CHORE: prepara release vX.Y.Z`, con la label `ignore-for-release`, que en `CHANGELOG.md` convierta `## [Unreleased]` en `## [vX.Y.Z] - AAAA-MM-DD` y deje un `## [Unreleased]` vacío encima. Espera a que se mergee.
 3. Siguiente número de rc: `git tag -l 'vX.Y.Z-rc.*' --sort=-v:refname | head -1` más uno (o `rc.1`).
 4. Crear el rc desde `main` (o desde `release/X.Y.x` si existe para este hito):
    ```bash
    PREV=$(git tag -l 'v*' --sort=-v:refname | grep -v -- '-rc\.' | head -1)
    gh release create vX.Y.Z-rc.N --target main --prerelease --title "vX.Y.Z-rc.N" \
      --notes "$(awk '/^## \[vX.Y.Z\]/{f=1;next} /^## \[/{f=0} f' CHANGELOG.md)" \
-     --generate-notes --notes-start-tag "$PREV"
+     --generate-notes ${PREV:+--notes-start-tag "$PREV"}
    ```
 5. Enlace al workflow Deploy en curso (`gh run list --workflow deploy.yml --limit 1`).
 
@@ -41,7 +41,7 @@ RC=$(git tag -l 'vX.Y.Z-rc.*' --sort=-v:refname | head -1)
 PREV=$(git tag -l 'v*' --sort=-v:refname | grep -v -- '-rc\.' | head -1)
 gh release create vX.Y.Z --target "$(git rev-list -n 1 "$RC")" --title "vX.Y.Z" \
   --notes "$(awk '/^## \[vX.Y.Z\]/{f=1;next} /^## \[/{f=0} f' CHANGELOG.md)" \
-  --generate-notes --notes-start-tag "$PREV"
+  --generate-notes ${PREV:+--notes-start-tag "$PREV"}
 ```
 Producción puede requerir aprobación en GitHub (Environment `production`). Avisa al usuario.
 

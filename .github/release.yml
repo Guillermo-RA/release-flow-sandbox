@@ -5,13 +5,13 @@ changelog:
     labels: [ignore-for-release]
     authors: [dependabot, "dependabot[bot]"]
   categories:
-    - title: 💥 Cambios incompatibles
+    - title: Cambios incompatibles
       labels: [breaking-change]
-    - title: 🗄️ Migraciones de base de datos
+    - title: Migraciones de base de datos
       labels: [migration]
-    - title: ✨ Nuevas funcionalidades
+    - title: Nuevas funcionalidades
       labels: [feature, enhancement]
-    - title: 🐛 Correcciones
+    - title: Correcciones
       labels: [bug, fix, hotfix]
-    - title: 🔧 Otros cambios
+    - title: Otros cambios
       labels: ["*"]
