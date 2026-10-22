@@ -20,7 +20,8 @@ La guía completa para el equipo está en [docs/FLUJO-RELEASES.md](docs/FLUJO-RE
 | .claude/skills/ | Comandos de Claude Code: /empezar-tarea, /cerrar-tarea y /release |
 | .mcp.json | Conexión de Claude Code con Jira (MCP de Atlassian) |
 | CLAUDE.md | Instrucciones para Claude Code sobre el flujo |
-| CHANGELOG.md | Registro de cambios, versión a versión |
+| CHANGELOG.md | Registro de cambios para usuarios; se publica en las notas de cada release |
+| CHANGELOG-INTERNO.md | Registro técnico de todos los cambios, incluidos refactors y mantenimiento |
 | plantillas/ | Variantes del workflow de despliegue: inertia (Docker), laravel y nextjs (sin Docker) |
 | scripts/ | Configuración inicial y copia del kit a proyectos existentes |
 

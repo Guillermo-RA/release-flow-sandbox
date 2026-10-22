@@ -32,7 +32,7 @@ copiar() {
 
 cd "$ORIGEN"
 for rel in .github/workflows/deploy.yml .github/workflows/jira-release.yml .github/release.yml \
-           .github/pull_request_template.md .mcp.json CHANGELOG.md docs/FLUJO-RELEASES.md \
+           .github/pull_request_template.md .mcp.json CHANGELOG.md CHANGELOG-INTERNO.md docs/FLUJO-RELEASES.md \
            scripts/inicializar-proyecto.sh plantillas/*.yml .claude/skills/*/SKILL.md; do
   copiar "$rel"
 done
