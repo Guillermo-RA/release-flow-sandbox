@@ -14,12 +14,18 @@ argument-hint: "[CLAVE-JIRA]"
    - ¿Hay migraciones? Solo pueden **añadir** (tablas, columnas nullable o con default, índices). Si renombran, borran o cambian el tipo de algo que usa la versión anterior, para y propón dividirlas (expand/contract, ver CLAUDE.md).
    - ¿Hay variables de entorno nuevas? Necesitan valor por defecto y estar en `.env.example`.
 
-4. **CHANGELOG.md.** Añade una línea por cada cambio visible en la sección correcta:
-   - Normalmente en `## [Unreleased]`.
-   - Si la tarea es una corrección del hito en estabilización (ya tiene sección `## [vX.Y.Z]` sin publicar como release final), va en esa sección.
-   - Categoría: `Añadido`, `Cambiado`, `Corregido`, `Eliminado`, `Migraciones` o `Seguridad`. Crea el encabezado `###` si no existe.
-   - Escribe para quien usa el producto, no para quien lee el código, y termina con el enlace: `([OGOV-123](https://10code.atlassian.net/browse/OGOV-123))`.
-   - Los cambios puramente internos (refactor, tests, CI) no van al CHANGELOG.
+4. **Changelogs.** Hay dos, con las mismas secciones de versión:
+   - **`CHANGELOG-INTERNO.md`, siempre:**
+     - una línea técnica por PR (qué se ha cambiado y dónde);
+     - categoría `Funcionalidades`, `Correcciones`, `Migraciones` o `Mantenimiento` (refactor, dependencias, CI, tests, documentación).
+   - **`CHANGELOG.md`, solo si el cambio es visible para quien usa el producto:**
+     - una línea por cambio visible, escrita para el usuario y no para quien lee el código;
+     - categoría `Añadido`, `Cambiado`, `Corregido`, `Eliminado`, `Migraciones` o `Seguridad`;
+     - los chores no van aquí.
+   - **En los dos:**
+     - la línea va en `## [Unreleased]`, salvo que la tarea corrija el hito en estabilización (con sección `## [vX.Y.Z]` sin release final publicada): entonces va en esa sección;
+     - crea el encabezado `###` si no existe;
+     - termina cada línea con el enlace: `([OGOV-123](https://10code.atlassian.net/browse/OGOV-123))`.
 
 5. **Commit** con el formato del proyecto: `PREFIJO:#CLAVE: descripción` (p. ej. `FIX:#OGOV-123: corrige el import de catálogos sin entity name`). Prefijos: FEAT, FIX, HOTFIX, REFACTOR, DOCS, TEST, CHORE. Añade `BREAKING CHANGE` al final del cuerpo si aplica.
 

@@ -31,11 +31,11 @@
 1. **Planificar en Jira.** En la sección Releases del proyecto se crea la versión v1.4.0, con fecha objetivo, y se pone v1.4.0 en el campo Fix Version de sus tareas.
 2. **Desarrollar.** Cada tarea sigue el camino: rama corta desde main → PR a main → revisión → squash merge. Cada PR:
    - lleva la clave Jira en la rama, el título y el commit;
-   - añade su cambio al CHANGELOG.md, en la sección [Unreleased];
-   - rellena la plantilla de PR y lleva una label: feature, bug, hotfix, chore o breaking-change, y además migration si hay migraciones.
+   - anota su cambio en la sección [Unreleased] del CHANGELOG-INTERNO.md (siempre) y del CHANGELOG.md (solo si el usuario lo nota);
+   - rellena la plantilla de PR y lleva una label: feature, bug, hotfix, chore o breaking-change, y además migration si hay migraciones. Los PRs con label chore no aparecen en las notas de la release: quedan registrados en el changelog interno.
 
    Claude Code hace todo esto con el comando /cerrar-tarea.
-3. **Congelar el hito.** Con todas las tareas terminadas, se mergea un PR "CHORE: prepara release v1.4.0", con la label ignore-for-release. Ese PR renombra la sección [Unreleased] del CHANGELOG a "[v1.4.0] - fecha".
+3. **Congelar el hito.** Con todas las tareas terminadas, se mergea un PR "CHORE: prepara release v1.4.0", con la label ignore-for-release. Ese PR renombra la sección [Unreleased] de los dos changelogs a "[v1.4.0] - fecha".
 4. **Release candidate.** Se crea la pre-release v1.4.0-rc.1 desde main, y se despliega sola en **staging**.
 5. **QA en staging.** Si aparece un bug, se corrige con un PR y se publica v1.4.0-rc.2, que vuelve a staging. Si mientras tanto main tiene que aceptar trabajo del hito siguiente, se crea la rama release/1.4.x desde el rc, y los siguientes rc salen de ahí.
 6. **Release final.** Se crea v1.4.0 **sobre el mismo commit** que el último rc validado. El workflow rechaza una release final que no coincida con ningún rc. Se despliega en **producción**, tras aprobación si el entorno la exige.
@@ -108,7 +108,8 @@ Backend y frontend viajan en la misma imagen Docker y cambian juntos al desplega
 | .github/workflows/jira-release.yml | Marca la versión de Jira como Released |
 | .github/release.yml | Agrupa las notas de cada release por tipo de cambio |
 | .github/pull_request_template.md | Plantilla de PR (Claude la rellena) |
-| CHANGELOG.md | Registro de cambios, versión a versión |
+| CHANGELOG.md | Registro de cambios para usuarios; es lo que aparece en las notas de cada release |
+| CHANGELOG-INTERNO.md | Registro técnico completo para el equipo, incluidos refactors y mantenimiento |
 | .claude/skills (empezar-tarea, cerrar-tarea, release) | Comandos de Claude Code |
 | .mcp.json | Conexión de Claude Code con Jira |
 | CLAUDE.md | Instrucciones para Claude Code, con el bloque del flujo |
@@ -155,6 +156,7 @@ La organización 10code-product tiene un workflow de limpieza (cleanup-org-packa
   - Cuando un rc se da por bueno, la versión final v1.4.0 se crea sobre su mismo commit. Así, a producción llega exactamente lo que se probó.
 - **Pre-release:** casilla de GitHub que marca una release como no definitiva. Aquí equivale a "va a staging".
 - **SemVer:** formato de versión MAYOR.MENOR.PARCHE. Se sube el MENOR con cada hito, el PARCHE con cada hotfix y el MAYOR con un cambio incompatible.
+- **Changelog interno:** el fichero CHANGELOG-INTERNO.md, con todos los cambios de cada versión en lenguaje técnico, incluidos los que no ve el usuario (refactors, dependencias, CI, tests). El CHANGELOG.md, en cambio, solo recoge lo visible y es lo que se publica en las notas de la release.
 - **Hotfix:** corrección urgente de una versión ya publicada en producción (v1.4.0 → v1.4.1).
 - **Rollback:** volver a desplegar una versión anterior ya publicada.
 - **Expand/contract:** hacer los cambios de base de datos en varias releases (primero añadir, luego dejar de usar, al final borrar), para que cada versión funcione con el esquema de la siguiente.
