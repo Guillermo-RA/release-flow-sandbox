@@ -41,11 +41,11 @@
   4. implementa la tarea y termina con /cerrar-tarea.
 - **Al terminar una tarea**, usa la skill /cerrar-tarea. Hace esto:
   1. Comprueba que los tests y linters pasan.
-  2. Añade el cambio a CHANGELOG.md, en la sección [Unreleased]. Si es una corrección del hito en estabilización, va en la sección de ese hito.
-     - Formato Keep a Changelog, con las categorías Añadido, Cambiado, Corregido, Eliminado, Migraciones y Seguridad.
-     - Una línea por cambio visible, escrita para quien usa el producto y terminada con el enlace a la tarea de Jira.
-     - Los cambios internos no van al CHANGELOG.
-  3. Abre el PR con la plantilla .github/pull_request_template.md rellena del todo y con una label: feature, bug, hotfix, chore o breaking-change. Si hay migraciones, añade también la label migration. Las notas de la release se agrupan por esas labels.
+  2. Anota el cambio en los changelogs, en la sección [Unreleased] (o en la del hito en estabilización, si es una corrección de ese hito):
+     - CHANGELOG-INTERNO.md, siempre: una línea técnica por PR, incluidos refactors, dependencias, CI, tests y documentación.
+     - CHANGELOG.md, solo si el cambio es visible para quien usa el producto: una línea escrita para el usuario, con las categorías de Keep a Changelog (Añadido, Cambiado, Corregido, Eliminado, Migraciones, Seguridad).
+     - Cada línea termina con el enlace a la tarea de Jira.
+  3. Abre el PR con la plantilla .github/pull_request_template.md rellena del todo y con una label: feature, bug, hotfix, chore o breaking-change. Si hay migraciones, añade también la label migration. Las notas de la release se agrupan por esas labels; los PRs con label chore no aparecen en ellas.
 - **No crees tags, releases ni despliegues** salvo que el usuario lo pida expresamente. Para eso está la skill /release, que siempre enseña el comando y espera confirmación.
 - No modifiques .github/workflows/deploy.yml ni la configuración de entornos salvo que te lo pidan.
 - En Jira, no cambies estados ni escribas comentarios salvo que te lo pidan. Leer sí puedes, siempre.

@@ -34,5 +34,5 @@
 
 ## Checklist
 
-- [ ] `CHANGELOG.md` actualizado en `[Unreleased]` (o en la sección del hito en estabilización)
+- [ ] `CHANGELOG-INTERNO.md` actualizado (siempre) y `CHANGELOG.md` si el cambio es visible para el usuario
 - [ ] Tests y linters pasan en local

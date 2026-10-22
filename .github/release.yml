@@ -1,8 +1,9 @@
 # Categorías de las notas que genera GitHub al crear una release
 # (gh release create --generate-notes). Se basan en las labels de los PRs.
+# Los PRs con label chore no salen en las notas: quedan en CHANGELOG-INTERNO.md.
 changelog:
   exclude:
-    labels: [ignore-for-release]
+    labels: [ignore-for-release, chore]
     authors: [dependabot, "dependabot[bot]"]
   categories:
     - title: Cambios incompatibles
