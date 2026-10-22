@@ -5,6 +5,12 @@ Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/); v
 
 ## [Unreleased]
 
+## [v1.1.1] - 2026-10-22
+
+### Corregido
+
+- Texto del saludo corregido en producción ([SANDBOX-4](https://10code.atlassian.net/browse/SANDBOX-4))
+
 ## [v1.1.0] - 2026-10-22
 
 ### Corregido
