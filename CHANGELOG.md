@@ -5,6 +5,8 @@ Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/); v
 
 ## [Unreleased]
 
+## [v1.1.0] - 2026-10-22
+
 ### Cambiado
 
 - El saludo de la página inicial menciona los hitos ([SANDBOX-2](https://10code.atlassian.net/browse/SANDBOX-2))
