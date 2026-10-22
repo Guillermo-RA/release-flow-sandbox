@@ -1,0 +1,205 @@
+# Despliegue por release — imágenes Docker en GHCR + docker compose (runner self-hosted).
+#
+# Mismo esquema que snp-community / 10code-inertia-template, pero las imágenes
+# se etiquetan con la versión (…-production-php:v1.4.0) en vez de con el SHA.
+# Un rollback reutiliza la imagen ya publicada; si ya no existe (limpieza del
+# registry), se reconstruye desde el tag.
+#
+#   - Pre-release publicada (v1.4.0-rc.1)  -> staging
+#   - Release publicada     (v1.4.0)       -> production
+#   - Run workflow manual (version + env)  -> redespliegue / ROLLBACK
+#
+# Sustituir MIPROYECTO por el grupo/label de runners del proyecto.
+# Convenciones (como en snp-community):
+#   docker/<entorno>/php/Dockerfile, docker/<entorno>/nginx/Dockerfile
+#   docker-compose-<entorno>.yml con  image: ${IMAGE_PREFIX}-<entorno>-php:${APP_VERSION}
+# Variables por GitHub Environment (staging / production):
+#   ENV_FILE_PATH     ruta en el servidor del .env de la app (obligatoria)
+#   MIGRATE_COMMAND   p. ej. "php artisan migrate --force" (vacío = no migra)
+# Secretos: GHCR_TOKEN
+name: Deploy
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Tag a desplegar (ej. v1.3.2). Para hacer rollback, indica una versión anterior."
+        required: true
+        type: string
+      environment:
+        description: "Entorno"
+        required: true
+        type: choice
+        options: [staging, production]
+
+concurrency:
+  group: deploy-${{ github.event_name == 'release' && (github.event.release.prerelease && 'staging' || 'production') || inputs.environment }}
+  cancel-in-progress: false
+
+jobs:
+  resolve:
+    name: Resolver versión y entorno
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.resolve.outputs.version }}
+      environment: ${{ steps.resolve.outputs.environment }}
+    steps:
+      - name: Checkout (historial y tags)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Validar versión y entorno
+        id: resolve
+        env:
+          EVENT: ${{ github.event_name }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          PRERELEASE: ${{ github.event.release.prerelease }}
+          INPUT_VERSION: ${{ inputs.version }}
+          INPUT_ENVIRONMENT: ${{ inputs.environment }}
+          SKIP_RC_CHECK: ${{ vars.SKIP_RC_CHECK }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT" = "release" ]; then
+            VERSION="$RELEASE_TAG"
+            if [ "$PRERELEASE" = "true" ]; then ENVIRONMENT=staging; else ENVIRONMENT=production; fi
+          else
+            VERSION="$INPUT_VERSION"
+            ENVIRONMENT="$INPUT_ENVIRONMENT"
+          fi
+
+          if ! [[ "$VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+)?$ ]]; then
+            echo "::error::'$VERSION' no es una versión válida (vX.Y.Z o vX.Y.Z-rc.N)"; exit 1
+          fi
+          if ! git rev-parse -q --verify "refs/tags/$VERSION" >/dev/null; then
+            echo "::error::El tag $VERSION no existe"; exit 1
+          fi
+
+          if [ "$ENVIRONMENT" = "production" ]; then
+            if [[ "$VERSION" == *-rc.* ]]; then
+              echo "::error::Una release candidate ($VERSION) no puede ir a producción"; exit 1
+            fi
+            # Una release final nueva debe ser exactamente el commit de un rc ya validado en staging.
+            # No aplica a los redespliegues manuales (rollback a versiones ya publicadas).
+            if [ "$EVENT" = "release" ] && [ "$SKIP_RC_CHECK" != "true" ]; then
+              COMMIT=$(git rev-list -n 1 "$VERSION")
+              if ! git tag --points-at "$COMMIT" | grep -qxE "${VERSION//./\\.}-rc\.[0-9]+"; then
+                echo "::error::Ningún ${VERSION}-rc.N apunta al commit de $VERSION. Publica y valida un rc en staging primero."; exit 1
+              fi
+            fi
+          fi
+
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "environment=$ENVIRONMENT" >> "$GITHUB_OUTPUT"
+          echo "### 🚀 $VERSION → $ENVIRONMENT" >> "$GITHUB_STEP_SUMMARY"
+
+  deploy:
+    name: Desplegar ${{ needs.resolve.outputs.version }} en ${{ needs.resolve.outputs.environment }}
+    needs: resolve
+    runs-on:
+      group: ${{ needs.resolve.outputs.environment == 'production' && 'MIPROYECTO-production' || 'MIPROYECTO-staging' }}
+      labels: [MIPROYECTO]
+    environment: ${{ needs.resolve.outputs.environment }}
+    env:
+      VERSION: ${{ needs.resolve.outputs.version }}
+      APP_ENV_NAME: ${{ needs.resolve.outputs.environment }}
+      COMPOSE_FILE: docker-compose-${{ needs.resolve.outputs.environment }}.yml
+    steps:
+      # El compose y los Dockerfiles salen del propio tag: un rollback usa la
+      # infraestructura de esa versión, no la actual.
+      - name: Checkout del tag
+        uses: actions/checkout@v4
+        with:
+          ref: refs/tags/${{ env.VERSION }}
+
+      - name: Login en GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GHCR_TOKEN }}
+
+      - name: ¿Existen ya las imágenes de esta versión?
+        id: existing
+        run: |
+          IMAGE_PREFIX=$(echo "ghcr.io/${{ github.repository }}" | tr '[:upper:]' '[:lower:]')
+          echo "IMAGE_PREFIX=$IMAGE_PREFIX" >> "$GITHUB_ENV"
+          if docker manifest inspect "$IMAGE_PREFIX-$APP_ENV_NAME-php:$VERSION" >/dev/null 2>&1 \
+            && docker manifest inspect "$IMAGE_PREFIX-$APP_ENV_NAME-nginx:$VERSION" >/dev/null 2>&1; then
+            echo "reuse=true" >> "$GITHUB_OUTPUT"
+            echo "♻️ Las imágenes de $VERSION ya existen en GHCR: se reutilizan sin recompilar." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "reuse=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      # ---------- Construcción (solo si las imágenes no existen) ----------
+
+      - name: Build & push imagen PHP
+        if: steps.existing.outputs.reuse != 'true'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./docker/${{ env.APP_ENV_NAME }}/php/Dockerfile
+          push: true
+          # Añadir aquí los build-args propios del proyecto (VITE_*, etc.)
+          build-args: |
+            APP_ENV=${{ env.APP_ENV_NAME }}
+            APP_VERSION=${{ env.VERSION }}
+          tags: ${{ env.IMAGE_PREFIX }}-${{ env.APP_ENV_NAME }}-php:${{ env.VERSION }}
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.version=${{ env.VERSION }}
+
+      - name: Build & push imagen Nginx
+        if: steps.existing.outputs.reuse != 'true'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./docker/${{ env.APP_ENV_NAME }}/nginx/Dockerfile
+          push: true
+          build-args: |
+            APP_ENV=${{ env.APP_ENV_NAME }}
+            APP_VERSION=${{ env.VERSION }}
+          tags: ${{ env.IMAGE_PREFIX }}-${{ env.APP_ENV_NAME }}-nginx:${{ env.VERSION }}
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.version=${{ env.VERSION }}
+
+      # ---------- Activación (siempre: despliegue nuevo y rollback) ----------
+
+      - name: Preparar .env
+        env:
+          ENV_FILE_PATH: ${{ vars.ENV_FILE_PATH }}
+        run: |
+          test -n "$ENV_FILE_PATH" || { echo "::error::Falta la variable ENV_FILE_PATH en el environment $APP_ENV_NAME"; exit 1; }
+          cp "$ENV_FILE_PATH" .env
+          echo "APP_VERSION=$VERSION" >> .env
+          echo "IMAGE_PREFIX=$IMAGE_PREFIX" >> .env
+          docker compose -f "$COMPOSE_FILE" pull
+
+      # Antes de recrear los contenedores: el esquema nuevo tiene que funcionar con
+      # el código que todavía está sirviendo (expand/contract).
+      - name: Migraciones
+        if: vars.MIGRATE_COMMAND != ''
+        run: docker compose -f "$COMPOSE_FILE" run --rm php ${{ vars.MIGRATE_COMMAND }}
+
+      - name: Levantar contenedores
+        run: |
+          HISTORY="$HOME/.deploy-history/${{ github.event.repository.name }}-$APP_ENV_NAME"
+          mkdir -p "$(dirname "$HISTORY")"
+          PREVIOUS=$(tail -n 1 "$HISTORY.log" 2>/dev/null | awk '{print $NF}' || true)
+          docker compose -f "$COMPOSE_FILE" up -d --force-recreate --remove-orphans
+          echo "$(date -u +%FT%TZ) ${{ github.actor }} ${{ github.event_name }} $VERSION" >> "$HISTORY.log"
+          echo "✅ ${PREVIOUS:-ninguna} → **$VERSION**" >> "$GITHUB_STEP_SUMMARY"
+          docker image prune -f
+
+  jira:
+    name: Marcar hito como publicado en Jira
+    needs: [resolve, deploy]
+    if: github.event_name == 'release' && needs.resolve.outputs.environment == 'production'
+    uses: ./.github/workflows/jira-release.yml
+    with:
+      version: ${{ needs.resolve.outputs.version }}
+    secrets: inherit

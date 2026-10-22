@@ -1,0 +1,235 @@
+# Despliegue por release — Laravel en servidor propio (runner self-hosted).
+#
+# Mismo esquema que ogov / ogov-presupuestos (releases/ + symlink current),
+# pero cada carpeta se llama como la versión (releases/v1.4.0) en vez de con
+# un timestamp, para poder volver a ella sin recompilar.
+#
+#   - Pre-release publicada (v1.4.0-rc.1)  -> staging
+#   - Release publicada     (v1.4.0)       -> production
+#   - Run workflow manual (version + env)  -> redespliegue / ROLLBACK
+#
+# Sustituir MIPROYECTO por el grupo/label de runners del proyecto.
+# Variables por GitHub Environment (staging / production):
+#   DEPLOY_PATH        carpeta raíz del despliegue en el servidor (obligatoria)
+#   RELEASES_TO_KEEP   versiones que se conservan en disco (por defecto 5)
+#   MIGRATE_COMMAND    p. ej. "php artisan migrate --force" (vacío = no migra)
+# Secretos: LARAVEL_ENV_ENCRYPTION_KEY
+name: Deploy
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Tag a desplegar (ej. v1.3.2). Para hacer rollback, indica una versión anterior."
+        required: true
+        type: string
+      environment:
+        description: "Entorno"
+        required: true
+        type: choice
+        options: [staging, production]
+
+concurrency:
+  group: deploy-${{ github.event_name == 'release' && (github.event.release.prerelease && 'staging' || 'production') || inputs.environment }}
+  cancel-in-progress: false
+
+jobs:
+  resolve:
+    name: Resolver versión y entorno
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.resolve.outputs.version }}
+      environment: ${{ steps.resolve.outputs.environment }}
+    steps:
+      - name: Checkout (historial y tags)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Validar versión y entorno
+        id: resolve
+        env:
+          EVENT: ${{ github.event_name }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          PRERELEASE: ${{ github.event.release.prerelease }}
+          INPUT_VERSION: ${{ inputs.version }}
+          INPUT_ENVIRONMENT: ${{ inputs.environment }}
+          SKIP_RC_CHECK: ${{ vars.SKIP_RC_CHECK }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT" = "release" ]; then
+            VERSION="$RELEASE_TAG"
+            if [ "$PRERELEASE" = "true" ]; then ENVIRONMENT=staging; else ENVIRONMENT=production; fi
+          else
+            VERSION="$INPUT_VERSION"
+            ENVIRONMENT="$INPUT_ENVIRONMENT"
+          fi
+
+          if ! [[ "$VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+)?$ ]]; then
+            echo "::error::'$VERSION' no es una versión válida (vX.Y.Z o vX.Y.Z-rc.N)"; exit 1
+          fi
+          if ! git rev-parse -q --verify "refs/tags/$VERSION" >/dev/null; then
+            echo "::error::El tag $VERSION no existe"; exit 1
+          fi
+
+          if [ "$ENVIRONMENT" = "production" ]; then
+            if [[ "$VERSION" == *-rc.* ]]; then
+              echo "::error::Una release candidate ($VERSION) no puede ir a producción"; exit 1
+            fi
+            # Una release final nueva debe ser exactamente el commit de un rc ya validado en staging.
+            # No aplica a los redespliegues manuales (rollback a versiones ya publicadas).
+            if [ "$EVENT" = "release" ] && [ "$SKIP_RC_CHECK" != "true" ]; then
+              COMMIT=$(git rev-list -n 1 "$VERSION")
+              if ! git tag --points-at "$COMMIT" | grep -qxE "${VERSION//./\\.}-rc\.[0-9]+"; then
+                echo "::error::Ningún ${VERSION}-rc.N apunta al commit de $VERSION. Publica y valida un rc en staging primero."; exit 1
+              fi
+            fi
+          fi
+
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "environment=$ENVIRONMENT" >> "$GITHUB_OUTPUT"
+          echo "### 🚀 $VERSION → $ENVIRONMENT" >> "$GITHUB_STEP_SUMMARY"
+
+  deploy:
+    name: Desplegar ${{ needs.resolve.outputs.version }} en ${{ needs.resolve.outputs.environment }}
+    needs: resolve
+    runs-on:
+      group: ${{ needs.resolve.outputs.environment == 'production' && 'MIPROYECTO-production' || 'MIPROYECTO-staging' }}
+      labels: [MIPROYECTO]
+    environment: ${{ needs.resolve.outputs.environment }}
+    env:
+      VERSION: ${{ needs.resolve.outputs.version }}
+      APP_ENV_NAME: ${{ needs.resolve.outputs.environment }}
+      DEPLOY_PATH: ${{ vars.DEPLOY_PATH }}
+      RELEASES_TO_KEEP: ${{ vars.RELEASES_TO_KEEP || 5 }}
+      COMPOSER_HOME: "~/.config/composer"
+      LARAVEL_ENV_ENCRYPTION_KEY: ${{ secrets.LARAVEL_ENV_ENCRYPTION_KEY }}
+    steps:
+      - name: Preparar rutas
+        run: |
+          set -euo pipefail
+          test -n "$DEPLOY_PATH" || { echo "::error::Falta la variable DEPLOY_PATH en el environment $APP_ENV_NAME"; exit 1; }
+          mkdir -p "$DEPLOY_PATH/releases" "$DEPLOY_PATH/shared/storage"
+          echo "RELEASE_PATH=$DEPLOY_PATH/releases/$VERSION" >> "$GITHUB_ENV"
+
+      - name: ¿Está ya construida esta versión en el servidor?
+        id: existing
+        run: |
+          if [ -f "$RELEASE_PATH/.deploy-complete" ]; then
+            echo "reuse=true" >> "$GITHUB_OUTPUT"
+            echo "♻️ $VERSION ya estaba construida en el servidor: se reactiva sin recompilar." >> "$GITHUB_STEP_SUMMARY"
+          else
+            rm -rf "$RELEASE_PATH"   # restos de un intento fallido
+            echo "reuse=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      # ---------- Construcción (solo si la versión no está en disco) ----------
+
+      - name: Checkout del tag
+        if: steps.existing.outputs.reuse != 'true'
+        uses: actions/checkout@v4
+        with:
+          ref: refs/tags/${{ env.VERSION }}
+
+      - name: Copiar código
+        if: steps.existing.outputs.reuse != 'true'
+        run: |
+          mkdir -p "$RELEASE_PATH"
+          cp -r . "$RELEASE_PATH"
+          rm -rf "$RELEASE_PATH/.git"
+          echo "$VERSION" > "$RELEASE_PATH/VERSION"
+
+      - name: Dependencias PHP
+        if: steps.existing.outputs.reuse != 'true'
+        working-directory: ${{ env.RELEASE_PATH }}
+        run: |
+          if [ -f composer.phar ]; then COMPOSER="php composer.phar"; else COMPOSER=composer; fi
+          $COMPOSER install --no-interaction --prefer-dist --optimize-autoloader --no-dev --classmap-authoritative --no-scripts
+
+      - name: Configurar .env
+        if: steps.existing.outputs.reuse != 'true'
+        working-directory: ${{ env.RELEASE_PATH }}
+        run: |
+          php artisan env:decrypt --env="$APP_ENV_NAME"
+          mv ".env.$APP_ENV_NAME" "$DEPLOY_PATH/shared/.env"
+          rm -f .env
+          ln -s "$DEPLOY_PATH/shared/.env" .env
+
+      - name: Enlazar storage compartido
+        if: steps.existing.outputs.reuse != 'true'
+        working-directory: ${{ env.RELEASE_PATH }}
+        run: |
+          if [ ! -d "$DEPLOY_PATH/shared/storage/app" ]; then
+            echo "Primer despliegue: se mueve el 'storage' del repo a 'shared'."
+            rmdir "$DEPLOY_PATH/shared/storage" 2>/dev/null || true
+            mv storage "$DEPLOY_PATH/shared/"
+          else
+            rm -rf storage
+          fi
+          ln -s "$DEPLOY_PATH/shared/storage" storage
+          find "$DEPLOY_PATH/shared/storage" -type d -exec chmod 775 {} \;
+          find "$DEPLOY_PATH/shared/storage" -type f -exec chmod 664 {} \;
+
+      - name: Paquetes, assets y storage:link
+        if: steps.existing.outputs.reuse != 'true'
+        working-directory: ${{ env.RELEASE_PATH }}
+        run: |
+          php artisan package:discover --ansi
+          if [ -f package.json ]; then
+            pnpm install --frozen-lockfile
+            pnpm run build
+          fi
+          php artisan storage:link
+
+      - name: Marcar versión como construida
+        if: steps.existing.outputs.reuse != 'true'
+        run: touch "$RELEASE_PATH/.deploy-complete"
+
+      # ---------- Activación (siempre: despliegue nuevo y rollback) ----------
+
+      # Las migraciones van ANTES de cambiar el symlink: el esquema nuevo tiene que
+      # funcionar con el código que todavía está sirviendo (expand/contract).
+      # En un rollback no hace nada: el código antiguo no trae migraciones pendientes.
+      - name: Migraciones
+        if: vars.MIGRATE_COMMAND != ''
+        working-directory: ${{ env.RELEASE_PATH }}
+        run: ${{ vars.MIGRATE_COMMAND }}
+
+      - name: Cachés
+        working-directory: ${{ env.RELEASE_PATH }}
+        run: |
+          php artisan optimize:clear
+          php artisan config:cache
+          php artisan route:cache
+          php artisan event:cache
+          php artisan view:cache
+
+      - name: Activar versión
+        run: |
+          PREVIOUS=$(cat "$DEPLOY_PATH/CURRENT_VERSION" 2>/dev/null || echo "ninguna")
+          ln -sfn "$RELEASE_PATH" "$DEPLOY_PATH/current"
+          echo "$VERSION" > "$DEPLOY_PATH/CURRENT_VERSION"
+          echo "$(date -u +%FT%TZ) $PREVIOUS -> $VERSION (${{ github.actor }}, ${{ github.event_name }})" >> "$DEPLOY_PATH/deploy-history.log"
+          echo "✅ $PREVIOUS → **$VERSION**" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Reiniciar workers
+        working-directory: ${{ env.RELEASE_PATH }}
+        run: php artisan queue:restart
+
+      - name: Limpiar versiones antiguas
+        run: |
+          cd "$DEPLOY_PATH/releases"
+          ACTIVE=$(basename "$(readlink -f "$DEPLOY_PATH/current")")
+          ls -1t | grep -vxF "$ACTIVE" | tail -n +"$RELEASES_TO_KEEP" | xargs -r rm -rf
+          echo "Versiones disponibles para rollback rápido: $(ls -1t | tr '\n' ' ')" >> "$GITHUB_STEP_SUMMARY"
+
+  jira:
+    name: Marcar hito como publicado en Jira
+    needs: [resolve, deploy]
+    if: github.event_name == 'release' && needs.resolve.outputs.environment == 'production'
+    uses: ./.github/workflows/jira-release.yml
+    with:
+      version: ${{ needs.resolve.outputs.version }}
+    secrets: inherit

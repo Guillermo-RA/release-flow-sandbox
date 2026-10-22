@@ -1,0 +1,17 @@
+# Categorías de las notas que genera GitHub al crear una release
+# (gh release create --generate-notes). Se basan en las labels de los PRs.
+changelog:
+  exclude:
+    labels: [ignore-for-release]
+    authors: [dependabot, "dependabot[bot]"]
+  categories:
+    - title: 💥 Cambios incompatibles
+      labels: [breaking-change]
+    - title: 🗄️ Migraciones de base de datos
+      labels: [migration]
+    - title: ✨ Nuevas funcionalidades
+      labels: [feature, enhancement]
+    - title: 🐛 Correcciones
+      labels: [bug, fix, hotfix]
+    - title: 🔧 Otros cambios
+      labels: ["*"]

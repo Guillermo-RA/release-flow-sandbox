@@ -1,0 +1,39 @@
+# Marca la Fix Version de Jira (mismo nombre que el tag, p. ej. v1.4.0) como
+# "Released" cuando esa versión llega a producción. Lo llaman los deploy-*.yml.
+#
+# Opcional: si JIRA_PROJECT_KEY no está definida, no hace nada.
+# Variables de repositorio: JIRA_BASE_URL (https://<sitio>.atlassian.net), JIRA_PROJECT_KEY
+# Secretos: JIRA_USER_EMAIL, JIRA_API_TOKEN
+name: Jira release
+
+on:
+  workflow_call:
+    inputs:
+      version:
+        required: true
+        type: string
+
+jobs:
+  release:
+    name: Publicar ${{ inputs.version }} en Jira
+    if: vars.JIRA_PROJECT_KEY != ''
+    runs-on: ubuntu-latest
+    steps:
+      - name: Marcar versión como publicada
+        env:
+          JIRA_BASE_URL: ${{ vars.JIRA_BASE_URL }}
+          JIRA_PROJECT_KEY: ${{ vars.JIRA_PROJECT_KEY }}
+          JIRA_AUTH: ${{ secrets.JIRA_USER_EMAIL }}:${{ secrets.JIRA_API_TOKEN }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          ID=$(curl -fsS -u "$JIRA_AUTH" "$JIRA_BASE_URL/rest/api/3/project/$JIRA_PROJECT_KEY/versions" \
+            | jq -r --arg v "$VERSION" '.[] | select(.name == $v) | .id')
+          if [ -z "$ID" ]; then
+            echo "::warning::No existe la versión $VERSION en el proyecto Jira $JIRA_PROJECT_KEY"
+            exit 0
+          fi
+          curl -fsS -u "$JIRA_AUTH" -X PUT -H "Content-Type: application/json" \
+            "$JIRA_BASE_URL/rest/api/3/version/$ID" \
+            -d "{\"released\": true, \"releaseDate\": \"$(date -u +%F)\"}" > /dev/null
+          echo "🏷️ Jira $JIRA_PROJECT_KEY: $VERSION marcada como Released" >> "$GITHUB_STEP_SUMMARY"
