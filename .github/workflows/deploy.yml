@@ -2,6 +2,7 @@
 # releases/<versión> + symlink current, reutilización, migraciones antes de activar,
 # limpieza), con un "build" trivial y runner self-hosted por label en vez de por grupo.
 name: Deploy
+run-name: "Deploy ${{ github.event_name == 'release' && github.event.release.tag_name || inputs.version }} → ${{ github.event_name == 'release' && (github.event.release.prerelease && 'staging' || 'production') || inputs.environment }}"
 
 on:
   release:
