@@ -11,11 +11,11 @@
 ## Tipo de cambio
 
 <!-- Marca uno. Tiene que coincidir con la label del PR (las notas de la release se agrupan por label). -->
-- [ ] ✨ Funcionalidad (`feature`)
-- [ ] 🐛 Corrección (`bug`)
-- [ ] 🚑 Hotfix sobre una versión ya publicada (`hotfix`)
-- [ ] 🔧 Refactor / mantenimiento / docs (`chore`)
-- [ ] 💥 Incompatible: rompe API, requiere cambio de infraestructura o subida de versión mayor (`breaking-change`)
+- [ ] Funcionalidad (`feature`)
+- [ ] Corrección (`bug`)
+- [ ] Hotfix sobre una versión ya publicada (`hotfix`)
+- [ ] Refactor / mantenimiento / docs (`chore`)
+- [ ] Incompatible: rompe API, requiere cambio de infraestructura o subida de versión mayor (`breaking-change`)
 
 ## Cómo probarlo
 
@@ -36,4 +36,3 @@
 
 - [ ] `CHANGELOG.md` actualizado en `[Unreleased]` (o en la sección del hito en estabilización)
 - [ ] Tests y linters pasan en local
-- [ ] El PR va contra `main` (o contra `release/X.Y.x` si es un hotfix)

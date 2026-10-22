@@ -7,7 +7,7 @@
 #   - Release publicada     (v1.4.0)       -> production
 #   - Run workflow manual (version + env)  -> redespliegue / ROLLBACK
 #
-# Sustituir MIPROYECTO por el grupo/label de runners del proyecto.
+# MIPROYECTO es el grupo/label de runners del proyecto (lo rellena scripts/inicializar-proyecto.sh).
 # Variables por GitHub Environment (staging / production):
 #   DEPLOY_PATH         carpeta raíz del despliegue en el servidor (obligatoria)
 #   SUPERVISOR_PROGRAM  programa de supervisor que sirve la app (obligatoria)
@@ -16,6 +16,7 @@
 #                       secretos, crear un secreto DOTENV en vez de una variable.
 #   RELEASES_TO_KEEP    versiones que se conservan en disco (por defecto 5)
 name: Deploy
+run-name: "Deploy ${{ github.event_name == 'release' && github.event.release.tag_name || inputs.version }} → ${{ github.event_name == 'release' && (github.event.release.prerelease && 'staging' || 'production') || inputs.environment }}"
 
 on:
   release:
@@ -91,7 +92,7 @@ jobs:
 
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "environment=$ENVIRONMENT" >> "$GITHUB_OUTPUT"
-          echo "### 🚀 $VERSION → $ENVIRONMENT" >> "$GITHUB_STEP_SUMMARY"
+          echo "### Despliegue de $VERSION en $ENVIRONMENT" >> "$GITHUB_STEP_SUMMARY"
 
   deploy:
     name: Desplegar ${{ needs.resolve.outputs.version }} en ${{ needs.resolve.outputs.environment }}
@@ -121,7 +122,7 @@ jobs:
         run: |
           if [ -f "$RELEASE_PATH/.deploy-complete" ]; then
             echo "reuse=true" >> "$GITHUB_OUTPUT"
-            echo "♻️ $VERSION ya estaba construida en el servidor: se reactiva sin recompilar." >> "$GITHUB_STEP_SUMMARY"
+            echo "$VERSION ya estaba construida en el servidor: se reactiva sin recompilar." >> "$GITHUB_STEP_SUMMARY"
           else
             rm -rf "$RELEASE_PATH"   # restos de un intento fallido
             echo "reuse=false" >> "$GITHUB_OUTPUT"
@@ -172,7 +173,7 @@ jobs:
           sudo supervisorctl restart "$SUPERVISOR_PROGRAM"
           echo "$VERSION" > "$DEPLOY_PATH/CURRENT_VERSION"
           echo "$(date -u +%FT%TZ) $PREVIOUS -> $VERSION (${{ github.actor }}, ${{ github.event_name }})" >> "$DEPLOY_PATH/deploy-history.log"
-          echo "✅ $PREVIOUS → **$VERSION**" >> "$GITHUB_STEP_SUMMARY"
+          echo "Desplegado: $PREVIOUS → **$VERSION**" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Limpiar versiones antiguas
         run: |
